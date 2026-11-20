@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Visa slot tracker</title>
+<link rel="icon" href="data:,">
+<style>
+:root{
+  --bg:#f6f7f9;--panel:#fff;--ink:#16181d;--muted:#5f6673;--line:#e3e6eb;
+  --accent:#2457d6;--ok:#0f8a4b;--warn:#b26b00;--bad:#c62828;--info:#5a5f6b;
+  --heat0:#eef1f5;--heat1:#c7e3d3;--heat2:#7cc49d;--heat3:#2e9c63;--heat4:#11673e;
+  --radius:12px;--shadow:0 1px 2px rgba(0,0,0,.05),0 2px 8px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme: dark){
+  :root{--bg:#0f1115;--panel:#171a21;--ink:#e8eaee;--muted:#9aa1ad;--line:#2a2f39;
+    --accent:#7aa2ff;--ok:#3ecf8e;--warn:#f0b44c;--bad:#ff6b6b;--info:#9aa1ad;
+    --heat0:#1e232c;--heat1:#1d4a35;--heat2:#23704b;--heat3:#2fa36a;--heat4:#5fe0a0;
+    --shadow:none}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--panel);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center}
+header h1{font-size:17px;margin:0;font-weight:650;letter-spacing:-.01em}
+.spacer{flex:1}
+main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:16px}
+section.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow)}
+section.panel h2{font-size:14px;margin:0 0 10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:3px 10px;font-size:12.5px;font-weight:600;border:1px solid var(--line);white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:currentColor}
+.s-OK{color:var(--ok)} .s-WAITING,.s-NO_DATA{color:var(--info)} .s-NO_SLOTS,.s-LIMIT_WARNING{color:var(--warn)}
+.s-LOGIN_NEEDED,.s-ERROR,.s-BLOCKED,.s-LIMIT_EXCEEDED,.s-ACCESS_LIMITED,.s-RATE_LIMITED{color:var(--bad)}
+.meter{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.bar{width:120px;height:8px;border-radius:99px;background:var(--heat0);overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--ok);transition:width .3s}
+.banner{border-radius:var(--radius);padding:10px 14px;font-size:14px;border:1px solid}
+.banner.bad{background:color-mix(in srgb,var(--bad) 10%,transparent);border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
+.banner.warn{background:color-mix(in srgb,var(--warn) 10%,transparent);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+.banner.info{background:color-mix(in srgb,var(--accent) 8%,transparent);border-color:color-mix(in srgb,var(--accent) 30%,transparent)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:5px 12px;cursor:pointer;user-select:none;font-size:14px}
+.chip input{accent-color:var(--accent);margin:0}
+.chip:has(input:checked){border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,transparent)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.card{border:1px solid var(--line);border-radius:10px;padding:12px;display:grid;gap:8px;cursor:pointer;background:var(--panel)}
+.card.active{outline:2px solid var(--accent);outline-offset:-1px}
+.card h3{margin:0;font-size:16px;display:flex;justify-content:space-between;align-items:center}
+.row{display:grid;grid-template-columns:78px 1fr auto;gap:8px;align-items:baseline;font-size:13.5px}
+.row .k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+.row .v{font-weight:650;font-variant-numeric:tabular-nums}
+.row .sub{color:var(--muted);font-size:12px;font-weight:400;grid-column:2/-1;margin-top:-6px}
+.muted{color:var(--muted)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:transparent;color:var(--ink);padding:5px 12px;font:inherit;font-size:13px;cursor:pointer}
+.seg button[aria-pressed=true]{background:var(--accent);color:#fff}
+.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px}
+select,input[type=date],input[type=number]{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:5px 8px}
+.months{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.month h4{margin:0 0 6px;font-size:13px;font-weight:600}
+.grid7{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.grid7 .dow{font-size:10.5px;color:var(--muted);text-align:center}
+.day{aspect-ratio:1;border-radius:5px;background:var(--heat0);border:0;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums;padding:0;cursor:default}
+.day.empty{background:transparent}
+.day.avail{cursor:pointer;color:#06291a;font-weight:650}
+.day.h1{background:var(--heat1)}.day.h2{background:var(--heat2)}.day.h3{background:var(--heat3);color:#fff}.day.h4{background:var(--heat4);color:#fff}
+@media (prefers-color-scheme: dark){.day.avail{color:#e8fff1}.day.h4{color:#062314}}
+.day.sel{outline:2px solid var(--accent);outline-offset:1px}
+.day.past{opacity:.35}
+.legend{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted)}
+.legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
+.slots{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px;min-height:28px}
+.slots .t{display:inline-block;margin:3px 6px 3px 0;padding:3px 8px;border-radius:6px;border:1px solid var(--line);font-variant-numeric:tabular-nums;font-size:13px}
+.chartbox{position:relative;height:300px}
+form.settings{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px 16px;align-items:end}
+form.settings label{display:grid;gap:4px;font-size:13px;color:var(--muted)}
+button.primary{font:inherit;font-weight:600;border:0;border-radius:8px;padding:7px 14px;background:var(--accent);color:#fff;cursor:pointer}
+ul.alerts{list-style:none;margin:0;padding:0;display:grid;gap:6px;font-size:13px}
+ul.alerts li{border-left:3px solid var(--accent);padding:2px 8px;white-space:pre-line}
+footer{max-width:1180px;margin:0 auto;padding:0 16px 24px;color:var(--muted);font-size:12.5px}
+.sr{position:absolute;left:-9999px}
+@media (max-width:600px){header h1{font-size:15px}.bar{width:80px}main{padding:10px}.chartbox{height:240px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>US visa slot tracker</h1>
+  <span id="state" class="pill s-WAITING"><span class="dot"></span><span>WAITING</span></span>
+  <span id="chrome" class="pill"><span class="dot"></span><span>Chrome</span></span>
+  <span class="spacer"></span>
+  <div class="meter" title="Appointment-page loads + calendar loads today (portal day resets midnight US Eastern)">
+    <span>Portal views</span><div class="bar"><i id="vbar" style="width:0"></i></div><b id="vtext">0 / 12</b>
+  </div>
+</header>
+
+<main>
+  <div id="banner" class="banner info" hidden></div>
+
+  <section class="panel">
+    <h2>Locations</h2>
+    <div id="locs" class="chips"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Earliest available</h2>
+    <div id="cards" class="cards"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Calendar heat-map</h2>
+    <div class="toolbar">
+      <select id="hmLoc" aria-label="Location"></select>
+      <div class="seg" role="group" aria-label="Appointment type">
+        <button data-type="OFC" aria-pressed="true">OFC</button><button data-type="INTERVIEW" aria-pressed="false">Interview</button>
+      </div>
+      <span class="spacer"></span>
+      <span class="legend">fewer <i style="background:var(--heat1)"></i><i style="background:var(--heat2)"></i><i style="background:var(--heat3)"></i><i style="background:var(--heat4)"></i> more slots</span>
+    </div>
+    <div id="heat" class="months"></div>
+    <div id="slots" class="slots muted">Tap a green date to see its time slots.</div>
+  </section>
+
+  <section class="panel">
+    <h2>Earliest date over time</h2>
+    <div class="toolbar">
+      <div class="seg" id="chType" role="group" aria-label="Chart type">
+        <button data-type="OFC" aria-pressed="true">OFC</button><button data-type="INTERVIEW" aria-pressed="false">Interview</button>
+      </div>
+      <select id="chDays" aria-label="Range"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select>
+    </div>
+    <div class="chartbox"><canvas id="chart" aria-label="Earliest available date over time"></canvas></div>
+  </section>
+
+  <section class="panel">
+    <h2>Settings</h2>
+    <form id="settings" class="settings">
+      <label>Alert only if before (target)<input type="date" name="target_before"></label>
+      <label>My booked OFC date<input type="date" name="current_ofc_date"></label>
+      <label>My booked interview date<input type="date" name="current_interview_date"></label>
+      <label>Daily portal-view budget<input type="number" name="daily_view_budget" min="1" max="50"></label>
+      <label style="display:flex;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" name="alerts_enabled"> Alerts on</label>
+      <div><button class="primary" type="submit">Save</button> <span id="saved" class="muted"></span></div>
+    </form>
+    <p class="muted" style="margin:10px 0 0;font-size:12.5px">Alerts fire when a captured date beats every date you set. With none set, they fire when it beats the previous best for that location. The same date is never alerted twice within 6 hours. Channels: <span id="channels">none</span>.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Recent alerts</h2>
+    <ul id="alerts" class="alerts"><li class="muted">None yet.</li></ul>
+  </section>
+</main>
+<footer>
+  Passive and read-only: this tool only records what your own browsing of the portal loads. It never opens, refreshes, books, reschedules or cancels anything.
+  Data shown is as of the last time you looked, and only browsing in the tracker's Chrome window is captured.
+</footer>
+<script src="/static/vendor/chart.umd.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

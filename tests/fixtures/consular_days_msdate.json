@@ -1,0 +1,13 @@
+{
+ "data": {
+  "post": "Mumbai",
+  "availableDays": [
+   {
+    "date": "/Date(1797465600000)/"
+   },
+   {
+    "date": "/Date(1803945600000+0530)/"
+   }
+  ]
+ }
+}
