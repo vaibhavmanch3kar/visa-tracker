@@ -19,7 +19,7 @@ log = logging.getLogger("tracker.notifier")
 
 
 class Sender(Protocol):
-    async def send(self, subject: str, text: str) -> list[str]: ...
+    async def send(self, subject: str, text: str, priority: str = "default") -> list[str]: ...
 
 
 class Notifier:
@@ -33,9 +33,11 @@ class Notifier:
             ch.append("telegram")
         if self.cfg.smtp_host and self.cfg.smtp_to and self.cfg.smtp_from:
             ch.append("email")
+        if self.cfg.ntfy_topic:
+            ch.append("ntfy")
         return ch
 
-    async def send(self, subject: str, text: str) -> list[str]:
+    async def send(self, subject: str, text: str, priority: str = "default") -> list[str]:
         ok: list[str] = []
         if "telegram" in self.channels:
             try:
@@ -49,9 +51,25 @@ class Notifier:
                 ok.append("email")
             except Exception as e:  # noqa: BLE001
                 log.error("Email send failed: %s", type(e).__name__)
+        if "ntfy" in self.channels:
+            try:
+                await asyncio.to_thread(self._ntfy, subject, text, priority)
+                ok.append("ntfy")
+            except Exception as e:  # noqa: BLE001
+                log.error("ntfy send failed: %s", type(e).__name__)
         if not self.channels:
             log.info("Alert (no channel configured): %s", subject)
         return ok
+
+    def _ntfy(self, subject: str, text: str, priority: str) -> None:
+        url = f"{self.cfg.ntfy_server.rstrip('/')}/{self.cfg.ntfy_topic}"
+        headers = {"Title": subject.encode("ascii", "ignore").decode() or "Visa tracker",  # headers must be ASCII
+                   "Priority": priority, "Tags": "calendar", "Click": self.cfg.site_link}
+        if self.cfg.ntfy_token:
+            headers["Authorization"] = f"Bearer {self.cfg.ntfy_token}"
+        req = urllib.request.Request(url, data=text.encode("utf-8"), headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as r:  # noqa: S310 - configured https server
+            r.read()
 
     def _telegram(self, text: str) -> None:
         url = f"https://api.telegram.org/bot{self.cfg.telegram_bot_token}/sendMessage"
@@ -110,13 +128,13 @@ def decide_date_alert(earliest: str | None, prev_best: str | None, settings: dic
 
 
 async def send_deduped(db: DB, sender: Sender, *, location: str, appt_type: str, date: str, subject: str,
-                       text: str, dedupe_hours: int, now: datetime | None = None) -> bool:
+                       text: str, dedupe_hours: int, now: datetime | None = None, priority: str = "default") -> bool:
     """Send unless the same (location, type, date) was alerted within `dedupe_hours`. Returns True if sent."""
     now = now or utcnow()
     if db.recent_alert_exists(location, appt_type, date, dedupe_hours, now=now):
         log.info("Alert suppressed (duplicate within %sh): %s %s %s", dedupe_hours, location, appt_type, date)
         return False
-    delivered = await sender.send(subject, text)
+    delivered = await sender.send(subject, text, priority)
     if getattr(sender, "channels", None) and not delivered:
         # Every configured channel failed: don't record it, so the next capture retries.
         log.warning("Alert not delivered on any channel; will retry on next capture")

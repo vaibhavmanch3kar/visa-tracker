@@ -66,6 +66,8 @@ function renderBanner(st) {
   const over = p.views_today >= p.budget, near = p.views_today >= Math.ceil(p.budget * 0.75);
   if (["LOGIN NEEDED"].includes(p.state)) { cls = "bad"; msg = "Login needed: sign in again in the tracker's Chrome window. Nothing is captured until you do."; }
   else if (["LIMIT EXCEEDED", "ACCESS LIMITED", "BLOCKED", "RATE LIMITED"].includes(p.state)) { cls = "bad"; msg = `Portal says ${p.state}. Stop browsing the appointment page until the daily reset (reportedly midnight US Eastern). Continuing can freeze the account.`; }
+  else if (["CHALLENGE", "ERROR"].includes(p.state)) { cls = "bad"; msg = p.detail; }
+  else if (["IN QUEUE", "MAINTENANCE"].includes(p.state)) { cls = "warn"; msg = p.detail; }
   else if (p.state === "LIMIT WARNING" || over) { cls = "bad"; msg = "You're at or past your daily view budget. Close the appointment page for today."; }
   else if (near) { cls = "warn"; msg = `${p.views_today} of ${p.budget} portal views used today. Make the remaining ones count.`; }
   else if (!p.chrome_connected) { cls = "info"; msg = "Waiting for Chrome. Run  python -m tracker chrome  and log in to the portal in that window."; }

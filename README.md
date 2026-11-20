@@ -140,12 +140,44 @@ type). With nothing set, it fires when the date beats the previous best for that
 re-alerted within 6 hours (`ALERT_DEDUPE_HOURS`). A failed send is not recorded, so it retries on the next
 capture. Limit, block and rate-limit signals also alert, once per state per day.
 
+To set up ntfy, which is the easiest way to get phone push: install the ntfy app, subscribe to a long random
+topic (e.g. `visa-<20 random chars>`), and set `NTFY_TOPIC` to the same name. Topics on ntfy.sh are public
+to anyone who knows the name, so the tracker treats the topic as a secret and redacts it from logs. Date alerts
+go out as urgent priority, portal warnings as high.
+
 To set up Telegram: create a bot with @BotFather, message it once, then get your chat ID from
 `https://api.telegram.org/bot<TOKEN>/getUpdates`. Put both in `.env`. Email uses standard SMTP; for Gmail, use an
 app password.
 
 Since this is passive, alerts mostly matter when someone else browses in that window, or as a phone record of
 what you saw.
+
+## Portal states the dashboard recognises
+
+| State | Seen as | What to do |
+|---|---|---|
+| LOGIN NEEDED | Redirect to `atlasauth.b2clogin.com`, or HTTP 401 | Sign in again in the tracker's Chrome window. The `/signin-aad-b2c_1` callback counts as *success*. |
+| CHALLENGE | Cloudflare "Just a moment" / "Verify you are human" page | Clear it yourself. The tracker never touches it. |
+| IN QUEUE | Virtual waiting-room page | Leave the tab alone. Reloading loses your place. |
+| MAINTENANCE | "Under maintenance" page | Come back later. |
+| LIMIT WARNING / LIMIT EXCEEDED | Daily view-cap messages | Stop for the day. You get an alert. |
+| ACCESS LIMITED / BLOCKED / RATE LIMITED | Access limitation, block page, HTTP 429, Cloudflare 1015 | Stop. You get an alert. |
+| ERROR | A calendar response contains dates the parser couldn't read | The format changed. Check `data/discovery.jsonl` and the parser TODOs. It is deliberately *not* recorded as NO SLOTS, so it can't hide behind an empty history. |
+
+## Prior art
+
+Several other open-source watchers informed the parser and the state list (ideas only, no code copied). The
+most useful was [yalewinters/visa-slot-watcher](https://github.com/yalewinters/visa-slot-watcher) (CC BY-NC
+4.0), whose field notes report the following:
+
+- the API is a single `POST /en-US/custom-actions/?route=…` dispatcher, with arguments in a JSON `parameters` field;
+- sign-in happens on Azure AD B2C;
+- the portal shows queue, challenge and maintenance pages;
+- responses should be parsed without trusting fixed field names.
+
+[hamzamilano/usvisascheduling-bot](https://github.com/hamzamilano/usvisascheduling-bot) independently uses the same
+`get-family-consular-schedule-days` route and `ScheduleDays` response. Both projects *drive* the portal on a
+timer; this tool deliberately does not.
 
 ## Security notes
 
@@ -154,6 +186,8 @@ what you saw.
   software alongside it.
 - **The dashboard binds to 127.0.0.1** and has no auth. Don't expose it.
 - **Logs never contain secrets.** A redacting filter masks tokens, cookies and the Telegram/SMTP secrets.
+- **Telemetry is never read.** Analytics and telemetry calls (`/v2/track`, `/cdn-cgi/`, Azure Monitor …) carry
+  emails and session IDs, so the tracker ignores them.
 - **The tracker stores no credentials.** Your login state is Chrome's own, in `.chrome-profile/`, which is git-ignored.
 
 ## Tests

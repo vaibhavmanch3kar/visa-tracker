@@ -47,6 +47,7 @@ class ParsedCapture:
     dates: list[str] = field(default_factory=list)      # YYYY-MM-DD, for *_DAYS
     for_date: str | None = None                           # YYYY-MM-DD, for *_TIMES
     times: list[TimeSlot] = field(default_factory=list)   # for *_TIMES
+    suspect: bool = False   # body had dates the parser couldn't read: schema drift, not "no slots"
 
     @property
     def appt_type(self) -> str:
@@ -60,6 +61,8 @@ class ParsedCapture:
 DATE_KEYS = ("Date", "date", "ScheduleDate", "scheduleDate", "AvailableDate", "availableDate", "Day", "day")
 TIME_KEYS = ("Time", "time", "StartTime", "startTime", "Slot", "slot", "Hour", "hour")
 COUNT_KEYS = ("Count", "count", "Available", "available", "AvailableSlots", "availableSlots", "Capacity", "Remaining")
+# A key whose falsy value marks a listed date as NOT bookable (e.g. {"Date": ..., "IsAvailable": false}).
+AVAIL_KEY = re.compile(r"(availab|isopen|hasslot|openslot|bookable|isfree)", re.I)
 # Request fields that carry the selected date when time slots are requested.
 REQUEST_DATE_KEYS = ("date", "scheduledate", "scheduledayid", "day", "appointmentdate")
 
@@ -118,6 +121,61 @@ def _walk(obj: Any) -> Iterable[Any]:
             yield from _walk(v)
 
 
+def deep_parse(obj: Any, depth: int = 0) -> Any:
+    """Expand JSON that arrives as a string inside JSON ({"d": "{\\"ScheduleDays\\": ...}"}),
+    a common ASP.NET / RPC-dispatcher pattern, so one walk sees everything."""
+    if depth > 20:
+        return obj
+    if isinstance(obj, str):
+        t = obj.strip()
+        if len(t) > 1 and t[0] in "{[":
+            try:
+                return deep_parse(json.loads(t), depth + 1)
+            except (json.JSONDecodeError, ValueError):
+                return obj
+        return obj
+    if isinstance(obj, list):
+        return [deep_parse(v, depth + 1) for v in obj]
+    if isinstance(obj, dict):
+        return {k: deep_parse(v, depth + 1) for k, v in obj.items()}
+    return obj
+
+
+def _flag(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value > 0
+    if isinstance(value, str) and value.strip().lower() in {"true", "yes", "y", "1", "available", "open"}:
+        return True
+    if isinstance(value, str) and value.strip().lower() in {"false", "no", "n", "0", "unavailable", "closed", "full"}:
+        return False
+    return None
+
+
+def _marked_unavailable(item: dict[str, Any]) -> bool:
+    for k, v in item.items():
+        if AVAIL_KEY.search(str(k)) and _flag(v) is False:
+            return True
+    return False
+
+
+_RAW_DATE = re.compile(r"\d{4}-\d{2}-\d{2}|/Date\(-?\d+|\d{1,2}/\d{1,2}/\d{4}")
+
+
+def looks_like_drift(body: Any, body_text: str | None) -> bool:
+    """No dates parsed, yet the body contains date-like values that weren't explicitly marked
+    unavailable: the response format probably changed. Don't report that as NO SLOTS."""
+    if not body_text or not _RAW_DATE.search(body_text):
+        return False
+    if isinstance(body, dict) and isinstance(body.get("ScheduleDays"), list):
+        return False  # the known shape, legitimately empty; other fields may hold timestamps
+    for node in _walk(body):
+        if isinstance(node, dict) and _marked_unavailable(node):
+            return False
+    return True
+
+
 def parse_days(body: Any) -> list[str]:
     """Available dates from a *days* response.
 
@@ -125,7 +183,7 @@ def parse_days(body: Any) -> list[str]:
     The fallback collects every date-keyed value inside lists of objects, and lists of bare date strings.
     """
     if isinstance(body, dict) and isinstance(body.get("ScheduleDays"), list):
-        out = {d for item in body["ScheduleDays"] if isinstance(item, dict)
+        out = {d for item in body["ScheduleDays"] if isinstance(item, dict) and not _marked_unavailable(item)
                for d in [normalize_date(item.get("Date"))] if d}
         return sorted(out)
     found: set[str] = set()
@@ -133,6 +191,8 @@ def parse_days(body: Any) -> list[str]:
         if isinstance(node, list):
             for item in node:
                 if isinstance(item, dict):
+                    if _marked_unavailable(item):
+                        continue
                     for k in DATE_KEYS:
                         if k in item and (d := normalize_date(item[k])):
                             found.add(d)
@@ -181,6 +241,22 @@ def _request_fields(url: str, post_data: str | None) -> dict[str, Any]:
         else:
             for k, v in parse_qsl(pd, keep_blank_values=True):
                 fields[k.lower()] = v
+    # The portal's RPC dispatcher packs arguments into one field (reportedly `parameters`)
+    # whose value is itself JSON; flatten nested objects so their keys are searchable.
+    def flatten(obj: Any) -> None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if isinstance(v, (dict, list)):
+                    flatten(v)
+                else:
+                    fields.setdefault(str(k).lower(), v)
+        elif isinstance(obj, list):
+            for v in obj:
+                flatten(v)
+    for v in list(fields.values()):
+        expanded = deep_parse(v) if isinstance(v, str) else v
+        if isinstance(expanded, (dict, list)):
+            flatten(expanded)
     return fields
 
 
@@ -221,10 +297,9 @@ def load_json(body_text: str | None) -> Any:
     if not body_text:
         return None
     s = body_text.strip()
-    if s.startswith(")]}'"):  # anti-JSON-hijacking prefix some sites use
-        s = s.split("\n", 1)[-1]
+    s = re.sub(r"^\s*(?:while\s*\(1\)\s*;|for\s*\(;;\)\s*;|\)\]\}',?)\s*", "", s)  # anti-hijacking prefixes
     try:
-        return json.loads(s)
+        return deep_parse(json.loads(s))
     except (json.JSONDecodeError, ValueError):
         return None
 
@@ -239,29 +314,42 @@ def parse_capture(url: str, post_data: str | None, body_text: str | None,
         return None
     loc = extract_location_id(url, post_data, location_key_pattern)
     if kind.is_days:
-        return ParsedCapture(kind=kind, location_id=loc, dates=parse_days(body))
+        dates = parse_days(body)
+        return ParsedCapture(kind=kind, location_id=loc, dates=dates,
+                             suspect=not dates and looks_like_drift(body, body_text))
     return ParsedCapture(kind=kind, location_id=loc, for_date=extract_for_date(url, post_data, body),
                          times=parse_times(body))
 
 
 # ---------------------------------------------------------------------------
-# Warning / state detection on HTML pages the user loads.
-# TODO(discovery): confirm the exact wording on usvisascheduling.com.
+# Page-state triage. Phrases come from applicants' reports and from other open-source
+# watchers' field notes; TODO(discovery): confirm the exact wording on usvisascheduling.com.
+# Order matters: the first match wins.
 # ---------------------------------------------------------------------------
-PAGE_WARNINGS: list[tuple[str, str]] = [
-    ("exceeded the limit for viewing this page", "LIMIT EXCEEDED"),
-    ("approaching the maximum number of times", "LIMIT WARNING"),
-    ("access limitation", "ACCESS LIMITED"),
-    ("you have been blocked", "BLOCKED"),
-    ("too many requests", "RATE LIMITED"),
+# Hard signals: checked on pages AND on API (JSON) responses.
+HARD_WARNINGS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"exceeded the limit for viewing this page", re.I), "LIMIT EXCEEDED"),
+    (re.compile(r"approaching the maximum number of times", re.I), "LIMIT WARNING"),
+    (re.compile(r"access\s*limitation|your access (has been |is )?(restricted|revoked|suspended)", re.I), "ACCESS LIMITED"),
+    (re.compile(r"you have been blocked", re.I), "BLOCKED"),
+    (re.compile(r"too many requests|you are being rate[\s-]*limited|error\s*(code\s*)?1015", re.I), "RATE LIMITED"),
+]
+# Soft signals: checked on full-page (Document) loads only, where page copy is unambiguous.
+PAGE_STATES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"<title>\s*(just a moment|attention required)|verify you are human|checking your browser", re.I), "CHALLENGE"),
+    (re.compile(r"you are (now )?in line|virtual (waiting )?(room|queue)|waiting room", re.I), "IN QUEUE"),
+    (re.compile(r"under maintenance|scheduled maintenance", re.I), "MAINTENANCE"),
 ]
 
 
-def detect_page_warning(html: str | None) -> str | None:
-    if not html:
+def detect_page_warning(text: str | None, is_document: bool = True) -> str | None:
+    if not text:
         return None
-    low = html.lower()
-    for needle, status in PAGE_WARNINGS:
-        if needle in low:
-            return status
+    for rx, state in HARD_WARNINGS:
+        if rx.search(text):
+            return state
+    if is_document:
+        for rx, state in PAGE_STATES:
+            if rx.search(text):
+                return state
     return None

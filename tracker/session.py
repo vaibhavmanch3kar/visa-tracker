@@ -29,6 +29,9 @@ import websockets
 log = logging.getLogger("tracker.session")
 
 INTERESTING_TYPES = {"XHR", "Fetch", "Document"}
+# Telemetry/analytics calls carry emails and session IDs and never hold availability: never read them.
+IGNORE_PATHS = ("/v2/track", "onecollector", "/cdn-cgi/", "/collect", "/b/ss", "monitor.azure.com",
+                "applicationinsights", "/telemetry")
 MAX_BODY_BYTES = 2_000_000
 
 
@@ -174,6 +177,9 @@ class CdpWatcher:
 
     def is_interesting(self, url: str, rtype: str) -> bool:
         if rtype not in INTERESTING_TYPES:
+            return False
+        low = url.lower()
+        if any(p in low for p in IGNORE_PATHS):
             return False
         if self._on_site(url):
             return True

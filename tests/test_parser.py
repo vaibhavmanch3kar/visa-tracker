@@ -137,3 +137,57 @@ def test_shape_keeps_location_ids_only():
     s = shape({"postId": "DEL-2", "Name": "Vaibhav", "nested": {"locationId": 77}},
               keep_keys=re.compile(Config().location_key_pattern, re.I))
     assert s == {"postId": "DEL-2", "Name": "<str len=7>", "nested": {"locationId": 77}}
+
+
+# --- behaviours added after reviewing other open-source watchers -------------------------
+from urllib.parse import urlencode  # noqa: E402
+
+DISPATCH = "https://www.usvisascheduling.com/en-US/custom-actions/?route=/api/v1/schedule-group/"
+
+
+def test_nested_json_string_response_is_expanded():
+    inner = json.dumps({"ScheduleDays": [{"Date": "2026-12-15T00:00:00"}]})
+    p = parser.parse_capture(DISPATCH + "get-family-ofc-schedule-days", None, json.dumps({"d": inner}),
+                             PATTERNS, LOC_KEY)
+    assert p.dates == ["2026-12-15"] and not p.suspect
+
+
+def test_location_id_inside_json_parameters_field():
+    form = urlencode({"parameters": json.dumps({"primaryId": "APP-1", "applications": ["APP-1"], "postId": "MUM-9"})})
+    assert parser.extract_location_id(DISPATCH, form, LOC_KEY) == "MUM-9"
+
+
+def test_dates_flagged_unavailable_are_skipped():
+    body = {"ScheduleDays": [{"Date": "2026-12-15", "IsAvailable": False}, {"Date": "2026-12-16", "IsAvailable": True}]}
+    assert parser.parse_days(body) == ["2026-12-16"]
+    generic = {"calendar": [{"date": "2026-12-15", "available": "false"}, {"date": "2026-12-18"}]}
+    assert parser.parse_days(generic) == ["2026-12-18"]
+
+
+def test_drift_detected_when_dates_present_but_unreadable():
+    url = DISPATCH + "get-family-ofc-schedule-days"
+    drift = json.dumps({"Openings": [{"When": "2026-12-15T00:00:00"}]})
+    assert parser.parse_capture(url, None, drift, PATTERNS, LOC_KEY).suspect is True
+    empty = json.dumps({"ScheduleDays": [], "ServerTime": "2026-11-20T10:00:00"})
+    # Known shape, empty list, plus an unrelated timestamp: genuinely no slots, not drift.
+    assert parser.parse_capture(url, None, empty, PATTERNS, LOC_KEY).suspect is False
+    really_empty = json.dumps({"ScheduleDays": []})
+    assert parser.parse_capture(url, None, really_empty, PATTERNS, LOC_KEY).suspect is False
+    all_full = json.dumps({"ScheduleDays": [{"Date": "2026-12-15", "Available": 0}]})
+    assert parser.parse_capture(url, None, all_full, PATTERNS, LOC_KEY).suspect is False
+
+
+def test_while1_guard_stripped():
+    assert parser.load_json('while(1);{"a": 1}') == {"a": 1}
+
+
+@pytest.mark.parametrize("text,is_doc,state", [
+    ("<html><title>Just a moment...</title>", True, "CHALLENGE"),
+    ("<p>You are now in line. Thank you for your patience.</p>", True, "IN QUEUE"),
+    ("<h1>Website under maintenance</h1>", True, "MAINTENANCE"),
+    ('{"message": "Scheduled maintenance tonight"}', False, None),   # soft states: pages only
+    ("Error 1015 - You are being rate limited", True, "RATE LIMITED"),
+    ('{"error": "Access limitation"}', False, "ACCESS LIMITED"),     # hard states: API too
+])
+def test_triage_states(text, is_doc, state):
+    assert parser.detect_page_warning(text, is_document=is_doc) == state

@@ -96,3 +96,45 @@ def test_off_site_xhr_ignored(tmp_path):
     svc, db, *_ = make(tmp_path)
     asyncio.run(svc.on_exchange(ex("https://evil.example/ofc-schedule-days", days_body(5))))
     assert db.history() == []
+
+
+def test_b2c_signin_callback_is_not_login_needed(tmp_path):
+    svc, *_ = make(tmp_path)
+    asyncio.run(svc.on_exchange(ex(SITE + "/signin-aad-b2c_1", "<html></html>", rtype="Document", mime="text/html")))
+    assert svc.status()["portal"]["state"] == "OK"
+
+
+def test_schema_drift_is_error_not_no_slots(tmp_path):
+    svc, db, *_ = make(tmp_path)
+    body = json.dumps({"Openings": [{"When": (today_ist() + timedelta(days=9)).isoformat()}]})
+    asyncio.run(svc.on_exchange(ex(SITE + "/api/ofc-schedule-days", body, post="postId=MUM-1")))
+    st = svc.status()
+    assert st["portal"]["state"] == "ERROR" and "parser" in st["portal"]["detail"]
+    assert db.history() == []                                  # nothing recorded as NO SLOTS
+
+
+def test_challenge_sets_state_without_alert(tmp_path):
+    svc, _, sender, _ = make(tmp_path)
+    page = ex(SITE + "/en-US/", "<title>Just a moment...</title>", rtype="Document", status=403, mime="text/html")
+    asyncio.run(svc.on_exchange(page))
+    assert svc.status()["portal"]["state"] == "CHALLENGE" and sender.sent == []
+
+
+def test_telemetry_requests_are_never_read():
+    from tracker.session import CdpWatcher
+
+    async def noop(*a):
+        return None
+    w = CdpWatcher("http://127.0.0.1:9222", "usvisascheduling.com", "b2clogin", noop, noop)
+    assert w.is_interesting(SITE + "/en-US/custom-actions/?route=x", "XHR")
+    assert not w.is_interesting(SITE + "/v2/track?email=a@b.c", "XHR")
+    assert not w.is_interesting(SITE + "/cdn-cgi/rum", "Fetch")
+    assert not w.is_interesting("https://other.example/x", "XHR")
+
+
+def test_ntfy_channel_and_topic_redaction():
+    from tracker.notifier import Notifier
+    from tracker.redact import redact_text
+    cfg = Config(ntfy_topic="vaibhav-visa-8f3k2-q9z")
+    assert Notifier(cfg).channels == ["ntfy"]
+    assert "8f3k2" not in redact_text("posting to https://ntfy.sh/vaibhav-visa-8f3k2-q9z", cfg.secrets())

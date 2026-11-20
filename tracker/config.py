@@ -77,6 +77,9 @@ class Config:
     smtp_from: str = ""
     smtp_to: str = ""
     smtp_starttls: bool = True
+    ntfy_server: str = "https://ntfy.sh"
+    ntfy_topic: str = ""
+    ntfy_token: str = ""
     log_level: str = "INFO"
 
     @classmethod
@@ -117,12 +120,17 @@ class Config:
             smtp_from=e("SMTP_FROM", ""),
             smtp_to=e("SMTP_TO", ""),
             smtp_starttls=_bool(e("SMTP_STARTTLS"), True),
+            ntfy_server=e("NTFY_SERVER", "https://ntfy.sh"),
+            ntfy_topic=e("NTFY_TOPIC", ""),
+            ntfy_token=e("NTFY_TOKEN", ""),
             log_level=e("LOG_LEVEL", "INFO").upper(),
         )
 
     def secrets(self) -> list[str]:
         """Literal secret values, so the log filter can mask them wherever they appear."""
-        return [s for s in (self.telegram_bot_token, self.smtp_password, self.smtp_user) if s and len(s) >= 4]
+        # The ntfy topic is a bearer secret too: anyone who knows it can read your alerts.
+        return [s for s in (self.telegram_bot_token, self.smtp_password, self.smtp_user, self.ntfy_topic, self.ntfy_token)
+                if s and len(s) >= 4]
 
     def compiled_patterns(self) -> dict[str, re.Pattern[str]]:
         return {k: re.compile(v, re.I) for k, v in self.patterns.items() if v}

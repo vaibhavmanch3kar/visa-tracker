@@ -11,7 +11,7 @@ class FakeSender:
     def __init__(self):
         self.sent = []
 
-    async def send(self, subject, text):
+    async def send(self, subject, text, priority="default"):
         self.sent.append((subject, text))
         return ["fake"]
 
@@ -67,7 +67,7 @@ def test_rule_disabled_and_empty():
 
 
 class FailingSender(FakeSender):
-    async def send(self, subject, text):
+    async def send(self, subject, text, priority="default"):
         return []
 
 

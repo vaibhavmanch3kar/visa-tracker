@@ -9,7 +9,7 @@ import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 from zoneinfo import ZoneInfo
 
 from . import parser
@@ -24,7 +24,15 @@ log = logging.getLogger("tracker.capture")
 IST = ZoneInfo("Asia/Kolkata")
 PORTAL_TZ = ZoneInfo("America/New_York")  # reported reset of the daily view cap: midnight US Eastern
 APPT_TYPES = ("OFC", "INTERVIEW")
-PROBLEM_STATES = {"LOGIN NEEDED", "LIMIT EXCEEDED", "ACCESS LIMITED", "BLOCKED", "RATE LIMITED"}
+PROBLEM_STATES = {"LOGIN NEEDED", "LIMIT EXCEEDED", "ACCESS LIMITED", "BLOCKED", "RATE LIMITED", "CHALLENGE"}
+ALERT_STATES = {"LIMIT WARNING", "LIMIT EXCEEDED", "ACCESS LIMITED", "BLOCKED", "RATE LIMITED"}
+STATE_ADVICE = {
+    "CHALLENGE": "Cloudflare check on screen: clear it yourself in the tracker's Chrome window.",
+    "IN QUEUE": "Portal virtual queue: leave the tab alone; it forwards by itself. Reloading loses your place.",
+    "MAINTENANCE": "Portal says it is under maintenance. Try later.",
+}
+# OAuth callback back from Azure AD B2C (e.g. /signin-aad-b2c_1) means login just SUCCEEDED.
+SIGNIN_CALLBACK = re.compile(r"/signin-[\w-]+", re.I)
 
 
 def portal_day(now: datetime | None = None) -> str:
@@ -116,11 +124,15 @@ class CaptureService:
         host = (urlsplit(ex.url).hostname or "").lower()
         on_site = self.cfg.site_host.lower() in host
 
-        warning = parser.detect_page_warning(ex.body) if ex.mime and ("html" in ex.mime or "json" in ex.mime or "text" in ex.mime) else None
+        textual = bool(ex.mime) and any(t in ex.mime for t in ("html", "json", "text"))
+        warning = parser.detect_page_warning(ex.body, is_document=ex.resource_type == "Document") if textual else None
         if warning:
-            self._set_state(warning, "Portal showed a limit/block message. Stop browsing it for today.")
-            self._queued.append(self._warning_alert(warning))
-        elif ex.resource_type == "Document" and self.login_rx.search(ex.url) and "oidc" not in path_q.lower():
+            self._set_state(warning, STATE_ADVICE.get(
+                warning, "Portal showed a limit/block message. Stop browsing it for today."))
+            if warning in ALERT_STATES:
+                self._queued.append(self._warning_alert(warning))
+        elif (ex.resource_type == "Document" and self.login_rx.search(ex.url)
+              and not (on_site and SIGNIN_CALLBACK.search(urlsplit(ex.url).path))):
             self._set_state("LOGIN NEEDED", "Log in again in the tracker's Chrome window")
         elif on_site and ex.resource_type == "Document" and ex.status == 200:
             self._set_state("OK", "Signed in")
@@ -164,6 +176,13 @@ class CaptureService:
         if p.kind.is_days:
             # Each calendar load counts against the portal's reported daily action cap.
             self.db.record_view(ex.at, portal_day(ex.at), "calendar", redact_text(ex.url))
+            if p.suspect:
+                # Dates are in the body but the parser read none: the format changed. Recording
+                # this as NO SLOTS would hide the problem and corrupt the history.
+                log.warning("Calendar response for %s had date-like values the parser couldn't read", loc)
+                self._set_state("ERROR", f"{p.appt_type} calendar for {loc} has dates the parser can't read "
+                                         "(format changed?). See data/discovery.jsonl and parser.py TODOs.")
+                return
             today = today_ist(ex.at).isoformat()
             dates = [d for d in p.dates if d >= today]
             status = "OK" if dates else "NO SLOTS"
@@ -192,14 +211,14 @@ class CaptureService:
                 f"Open days in next 90: {n90}\nWhy: {reason}\n{self.cfg.site_link}")
         await send_deduped(self.db, self.sender, location=loc, appt_type=appt_type, date=earliest,
                            subject=f"Visa {appt_type} {loc}: {earliest}", text=text,
-                           dedupe_hours=self.cfg.alert_dedupe_hours)
+                           dedupe_hours=self.cfg.alert_dedupe_hours, priority="urgent")
 
     async def _warning_alert(self, state: str) -> None:
         text = (f"US visa portal: {state}\nThe portal showed a limit/block signal. Stop browsing the "
                 f"appointment page until the reset (reportedly midnight US Eastern).\n{self.cfg.site_link}")
         await send_deduped(self.db, self.sender, location="PORTAL", appt_type="WARNING",
                            date=f"{portal_day()}:{state}", subject=f"Visa portal {state}", text=text,
-                           dedupe_hours=self.cfg.alert_dedupe_hours)
+                           dedupe_hours=self.cfg.alert_dedupe_hours, priority="high")
 
     # -- discovery -----------------------------------------------------------
     def _write_discovery(self, ex: Exchange) -> None:
@@ -214,10 +233,15 @@ class CaptureService:
         post_shape: Any = None
         if ex.post_data:
             obj = parser.load_json(ex.post_data)
-            if obj is not None:
-                post_shape = shape(obj, keep_keys=self.loc_key_rx)
-            else:
-                post_shape = redact_text(ex.post_data[:2000])
+            if obj is None and "=" in ex.post_data:
+                # Form body: decode it (JSON-valued fields like `parameters` get expanded) so the
+                # log shows readable structure, then mask it like any other body.
+                form = dict(parse_qsl(ex.post_data, keep_blank_values=True))
+                obj = {k: parser.deep_parse(v) for k, v in form.items()}
+                obj = {k: ("[REDACTED]" if re.search(r"token|csrf|password|secret", k, re.I) else v)
+                       for k, v in obj.items()}
+            post_shape = (shape(obj, keep_keys=self.loc_key_rx) if obj is not None
+                          else redact_text(ex.post_data[:2000]))
         rec = {
             "at": iso(ex.at), "type": ex.resource_type, "method": ex.method, "status": ex.status,
             "mime": ex.mime, "url": redact_text(ex.url, self.cfg.secrets()),
